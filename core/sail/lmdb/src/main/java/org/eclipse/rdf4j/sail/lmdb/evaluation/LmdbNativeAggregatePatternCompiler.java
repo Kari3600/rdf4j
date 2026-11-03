@@ -23,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.OptionalLong;
 
 import org.eclipse.rdf4j.common.annotation.Experimental;
 import org.eclipse.rdf4j.common.order.StatementOrder;
@@ -58,6 +59,8 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 	static final String EXACT_EMPTY_PRUNING_PROPERTY = "rdf4j.lmdb.directAdjacency.exactEmptyPruning.enabled";
 	/** Statement patterns folded to the empty plan at compile time by an exact adjacency NOT_FOUND proof. */
 	static final java.util.concurrent.atomic.AtomicLong EXACT_EMPTY_PRUNES = new java.util.concurrent.atomic.AtomicLong();
+	private NativeLmdbQuerySource.IndexAccessProfile accessProfile;
+	private boolean accessProfileCaptured;
 
 	static boolean exactEmptyPruningEnabled() {
 		String configured = System.getProperty(EXACT_EMPTY_PRUNING_PROPERTY);
@@ -67,6 +70,14 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 	LmdbNativeAggregatePatternCompiler(QueryEvaluationContext context, LmdbNativeEvaluationStrategy strategy,
 			NativeLmdbQuerySource source) {
 		super(context, strategy, source);
+	}
+
+	private NativeLmdbQuerySource.IndexAccessProfile accessProfile() {
+		if (!accessProfileCaptured) {
+			accessProfile = source.indexAccessProfile();
+			accessProfileCaptured = true;
+		}
+		return accessProfile;
 	}
 
 	/** The plain variable, constant, or native-computable copies of an extension. */
@@ -163,7 +174,7 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 		double estimate = rangedEstimate(base.staticEstimate, domain.minValue(), domain.maxValue(),
 				filter.operator, filter.constant);
 		return new PatternPlan(base.s, base.p, base.o, base.c, base.contexts, base.namedContextScope,
-				base.statementOrder, domain.indexFieldSeq(), range, estimate);
+				base.statementOrder, domain.indexFieldSeq(), range, estimate, base.accessProfile);
 	}
 
 	/**
@@ -455,8 +466,8 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 			return null;
 		}
 		return new PatternPlan(s, p, o, c, contexts, isNamedContextScope(sp, c),
-				sp.getStatementOrder(), indexName(sp.getStatementOrder(), s, p, o, c),
-				staticEstimate(s, p, o, c, contexts));
+				sp.getStatementOrder(), indexName(sp.getStatementOrder(), s, p, o, c), null,
+				staticEstimate(s, p, o, c, contexts), accessProfile());
 	}
 
 	SlotPlan compileMultiValueStatementPattern(StatementPattern pattern, String variable, long[] ids,
@@ -641,8 +652,8 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 			return null;
 		}
 		return new PatternPlan(s, p, o, c, contexts, isNamedContextScope(sp, c),
-				sp.getStatementOrder(), indexName(sp.getStatementOrder(), s, p, o, c),
-				algebraEstimate(sp));
+				sp.getStatementOrder(), indexName(sp.getStatementOrder(), s, p, o, c), null,
+				algebraEstimate(sp), accessProfile());
 	}
 
 	/** A parser-level {@code GRAPH rdf4j:nil} denotes the default graph despite its named-context algebra scope. */
@@ -652,18 +663,22 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 	}
 
 	/**
-	 * Exact-empty pruning: a constant predicate with a constant endpoint whose adjacency lookup returns the exact
-	 * NOT_FOUND proof compiles to the empty plan, letting the existing empty-plan folding kill the enclosing subtree
-	 * before execution. The proof counts the degree over all contexts, so no context constraint or named-graph scope
-	 * can resurrect a row. {@code OptionalLong.empty()} means the planes cannot answer and the pattern compiles
-	 * normally.
+	 * Exact-empty pruning: an empty predicate plane or a constant endpoint's exact NOT_FOUND proof compiles to the
+	 * empty plan, letting existing empty-plan folding kill the enclosing subtree before execution. Both proofs cover
+	 * all contexts, so no context constraint or named-graph scope can resurrect a row. Unknown proofs leave the pattern
+	 * unchanged.
 	 */
 	private boolean provablyEmptyByAdjacency(Term s, Term p, Term o) {
 		if (!exactEmptyPruningEnabled() || !p.isConstant() || p.constant <= 0L) {
 			return false;
 		}
+		OptionalLong predicateCount = source.exactPredicateCount(p.constant);
+		if (predicateCount.isPresent() && predicateCount.getAsLong() == 0L) {
+			EXACT_EMPTY_PRUNES.incrementAndGet();
+			return true;
+		}
 		if (s.isConstant() && s.constant > 0L) {
-			java.util.OptionalLong degree = source.exactDegree(p.constant, s.constant, true);
+			OptionalLong degree = source.exactDegree(p.constant, s.constant, true);
 			if (degree.isPresent()) {
 				if (degree.getAsLong() == 0L) {
 					EXACT_EMPTY_PRUNES.incrementAndGet();
@@ -673,7 +688,7 @@ abstract class LmdbNativeAggregatePatternCompiler extends LmdbNativeAggregatePla
 			}
 		}
 		if (o.isConstant() && o.constant > 0L) {
-			java.util.OptionalLong degree = source.exactDegree(p.constant, o.constant, false);
+			OptionalLong degree = source.exactDegree(p.constant, o.constant, false);
 			if (degree.isPresent() && degree.getAsLong() == 0L) {
 				EXACT_EMPTY_PRUNES.incrementAndGet();
 				return true;

@@ -145,18 +145,26 @@ class WorkbenchPolicyBootPackagingTest {
 	}
 
 	@Test
-	void theExplorerEntryAndStylesheetAreRevalidatedWhileOtherScriptsStayCached() {
-		// The entry and stylesheet keep their names across releases but load hashed chunks: a cached entry must not
-		// outlive an upgrade that removed the chunks it imports.
+	void scriptsAndStylesheetsAreRevalidatedWhileOtherFilesStayCached() {
+		// Scripts and stylesheets keep their names across releases: after an upgrade a browser must not run the
+		// previous release's scripts against the new server, nor a cached explorer entry that imports removed chunks.
 		String base = "http://localhost:" + port + "/boot-mount/rdf4j-workbench";
-		for (String path : List.of("/scripts/graph-explorer/graph-explorer.mjs", "/styles/graph-explorer.css")) {
+		for (String path : List.of("/scripts/workbenchApp.js", "/scripts/graph-explorer/graph-explorer.mjs",
+				"/styles/workbench-refresh.css", "/styles/graph-explorer.css")) {
 			ResponseEntity<String> revalidated = restTemplate.getForEntity(base + path, String.class);
 			assertThat(revalidated.getStatusCode()).as(path).isEqualTo(HttpStatus.OK);
 			assertThat(revalidated.getHeaders().get(HttpHeaders.CACHE_CONTROL)).as(path)
 					.containsExactly("max-age=0, public");
+			// Revalidating an unchanged file costs a Not Modified answer, not the file.
+			HttpHeaders conditional = new HttpHeaders();
+			conditional.set(HttpHeaders.IF_MODIFIED_SINCE,
+					revalidated.getHeaders().getFirst(HttpHeaders.LAST_MODIFIED));
+			assertThat(restTemplate.exchange(base + path, HttpMethod.GET, new HttpEntity<>(conditional), String.class)
+					.getStatusCode()).as(path).isEqualTo(HttpStatus.NOT_MODIFIED);
 		}
-		ResponseEntity<String> classic = restTemplate.getForEntity(base + "/scripts/workbenchApp.js", String.class);
-		assertThat(classic.getHeaders().get(HttpHeaders.CACHE_CONTROL)).containsExactly("max-age=600, public");
+		ResponseEntity<byte[]> icon = restTemplate.getForEntity(base + "/favicon.ico", byte[].class);
+		assertThat(icon.getStatusCode()).isEqualTo(HttpStatus.OK);
+		assertThat(icon.getHeaders().get(HttpHeaders.CACHE_CONTROL)).containsExactly("max-age=600, public");
 	}
 
 	@Test
@@ -173,11 +181,25 @@ class WorkbenchPolicyBootPackagingTest {
 	@Test
 	void sharedWorkbenchPolicyBlocksHiddenNamespacesPageForEveryHttpMethodBeforeConditionalCaching() {
 		String hiddenPage = workbenchUrl("/repositories/NONE/namespaces");
+		ResponseEntity<String> landing = restTemplate.getForEntity(workbenchUrl("/repositories/NONE/server"),
+				String.class);
+		assertThat(landing.getStatusCode()).isEqualTo(HttpStatus.OK);
+		List<String> setCookies = landing.getHeaders().get(HttpHeaders.SET_COOKIE);
+		assertThat(setCookies).isNotNull();
+		List<String> cookiePairs = setCookies.stream().map(cookie -> cookie.split(";", 2)[0]).toList();
+		String tokenPair = cookiePairs.stream()
+				.filter(cookie -> cookie.startsWith("rdf4j-workbench-csrf="))
+				.findFirst()
+				.orElseThrow();
 		for (HttpMethod method : List.of(HttpMethod.GET, HttpMethod.HEAD, HttpMethod.POST, HttpMethod.PUT,
 				HttpMethod.PATCH, HttpMethod.DELETE, HttpMethod.OPTIONS)) {
 			HttpHeaders headers = new HttpHeaders();
 			if (method == HttpMethod.GET || method == HttpMethod.HEAD) {
 				headers.setIfModifiedSince(Instant.parse("2099-01-01T00:00:00Z").toEpochMilli());
+			} else if (method != HttpMethod.OPTIONS) {
+				headers.set(HttpHeaders.COOKIE, String.join("; ", cookiePairs));
+				headers.set("X-RDF4J-CSRF-Token", tokenPair.substring("rdf4j-workbench-csrf=".length()));
+				headers.setOrigin("http://localhost:" + port);
 			}
 			ResponseEntity<String> response = restTemplate.exchange(hiddenPage, method,
 					new HttpEntity<>(headers), String.class);

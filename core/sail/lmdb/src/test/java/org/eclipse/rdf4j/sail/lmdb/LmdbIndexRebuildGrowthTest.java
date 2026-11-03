@@ -37,8 +37,8 @@ class LmdbIndexRebuildGrowthTest {
 	Path directory;
 
 	@ParameterizedTest
-	@CsvSource({ "2,false,false", "2,true,false", "6,false,false", "6,true,false",
-			"2,false,true", "2,true,true", "6,false,true", "6,true,true" })
+	@CsvSource({ "2,false,false", "2,true,false", "7,false,false", "7,true,false",
+			"2,false,true", "2,true,true", "7,false,true", "7,true,true" })
 	void capacityDerivedStatementRebuildKeepsEverySourceRow(int format, boolean inline, boolean inferred)
 			throws Exception {
 		Path output = directory.resolve("rebuild-child.log");
@@ -113,6 +113,11 @@ class LmdbIndexRebuildGrowthTest {
 			assertThat(loaded.load()).isTrue();
 			try (TripleStore rebuilt = new TripleStore(data.toFile(), loaded,
 					config(INDEXES, inline), null)) {
+				assertThat(nativeMapSize(rebuilt.getTxnManager()))
+						.as("construction must retain the committed layout without rebuilding its trees")
+						.isEqualTo(before);
+				rebuilt.startBackgroundIndexRebuild();
+				assertThat(rebuilt.awaitIndexRebuild(45, TimeUnit.SECONDS)).as(rebuilt.indexRebuildStatus()).isTrue();
 				long after = nativeMapSize(rebuilt.getTxnManager());
 				assertThat(after).isGreaterThan(before);
 				System.out.println("ACTUAL_REBUILD_GROWTH=" + before + "->" + after);

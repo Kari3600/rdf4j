@@ -13,6 +13,7 @@ package org.eclipse.rdf4j.sail.lmdb;
 
 import static org.eclipse.rdf4j.sail.lmdb.LmdbUtil.E;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -163,6 +164,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			reopened.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			reopened.reclaimPersistedUnusedIdsBatch(4096);
 			assertEquals(seedEquivalent, reopened.getValue(seedId), "the seed must survive a reopen");
 			assertEquals(companionEquivalent, reopened.getValue(companionId), "the companion must survive a reopen");
 			assertEquals(datatype, reopened.getValue(datatypeId), "the datatype must survive a reopen");
@@ -222,6 +228,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			reopened.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			reopened.reclaimPersistedUnusedIdsBatch(4096);
 			assertEquals(seedEquivalent, reopened.getValue(seedId), "the seed must survive a reopen");
 			assertEquals(companionEquivalent, reopened.getValue(companionId), "the companion must survive a reopen");
 			assertEquals(datatype, reopened.getValue(datatypeId), "the datatype must survive a reopen");
@@ -332,6 +343,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			reopened.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			reopened.reclaimPersistedUnusedIdsBatch(4096);
 			assertNull(reopened.getValue(outerAId), "the collected outer term must be gone after reopen eviction");
 			assertEquals(expectedOuterB, reopened.getValue(outerBId),
 					"the remaining outer term must survive a reopen");
@@ -384,6 +400,9 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore store = new ValueStore(valuesDir, config);
 		try {
+			assertFalse(store.hasTrustedReferenceCounts());
+			store.reconstructReferenceCountsOffline();
+			assertTrue(store.hasTrustedReferenceCounts());
 			assertEquals(firstId, store.getId(firstEquivalent, false), "the first forward mapping must resolve");
 			assertEquals(secondId, store.getId(secondEquivalent, false), "the second forward mapping must resolve");
 			assertEquals(datatypeId, store.getId(datatype, false), "the datatype forward mapping must resolve");
@@ -400,6 +419,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			reopened.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			reopened.reclaimPersistedUnusedIdsBatch(4096);
 			assertNull(reopened.getValue(firstId), "the collected historical literal must be absent after reopen");
 			assertEquals(secondEquivalent, reopened.getValue(secondId),
 					"repair must preserve the other literal sharing the datatype");
@@ -436,11 +460,14 @@ class ValueStoreCheckpointAtomicityTest {
 		}
 
 		// Keep the old CLEAN marker but make the count inconsistent in a separate native LMDB transaction. The next
-		// ValueStore open must reject the marker by transaction ID and rebuild from live owners.
+		// ValueStore open must reject the marker by transaction ID; explicit maintenance rebuilds from live owners.
 		overwriteRefCountInNativeTransaction(valuesDir, datatypeId, 1L);
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			assertFalse(reopened.hasTrustedReferenceCounts());
+			reopened.reconstructReferenceCountsOffline();
+			assertTrue(reopened.hasTrustedReferenceCounts());
 			reopened.startTransaction(true);
 			collectValueAndDependencies(reopened, firstId);
 			reopened.commit();
@@ -457,6 +484,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore afterEviction = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			afterEviction.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			afterEviction.reclaimPersistedUnusedIdsBatch(4096);
 			assertNull(afterEviction.getValue(firstId), "the collected first literal must be absent after reopen");
 			assertEquals(second, afterEviction.getValue(secondId),
 					"reconciliation must preserve the other literal");
@@ -521,6 +553,9 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			assertFalse(reopened.hasTrustedReferenceCounts());
+			reopened.reconstructReferenceCountsOffline();
+			assertTrue(reopened.hasTrustedReferenceCounts());
 			assertEquals(firstId, reopened.getId(firstExpected, false), "the first batched owner must resolve");
 			assertEquals(lastId, reopened.getId(lastExpected, false), "the last batched owner must resolve");
 			assertEquals(datatypeId, reopened.getId(datatype, false), "the datatype must resolve after recovery");
@@ -543,6 +578,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore afterEviction = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			afterEviction.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			afterEviction.reclaimPersistedUnusedIdsBatch(4096);
 			assertNull(afterEviction.getValue(firstId), "the selected batched owner must be absent after reopen");
 			assertEquals(datatype, afterEviction.getValue(datatypeId), "the shared datatype must survive reopen");
 			assertEquals(expectedInner, afterEviction.getValue(innerId), "the nested term must survive reopen");
@@ -578,9 +618,10 @@ class ValueStoreCheckpointAtomicityTest {
 			bulkStore.completeBulkInitialization(config);
 			bulkStore.startTransaction(true);
 			try {
-				assertThrows(java.io.IOException.class,
-						() -> bulkStore.gcIds(Collections.singleton(valueId), new HashSet<>()),
-						"an imported dictionary must be reconciled before same-instance GC");
+				bulkStore.gcIds(Collections.singleton(valueId), new HashSet<>());
+				assertFalse(bulkStore.hasTrustedReferenceCounts(), "raw imports remain conservatively writable");
+				assertTrue(bulkStore.hasRetiredIds(),
+						"untrusted GC records a durable candidate without deleting owners");
 				assertEquals(value, bulkStore.getValue(valueId),
 						"refusing GC must leave the imported value intact");
 			} finally {
@@ -637,6 +678,9 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore store = new ValueStore(valuesDir, config);
 		try {
+			assertFalse(store.hasTrustedReferenceCounts());
+			store.reconstructReferenceCountsOffline();
+			assertTrue(store.hasTrustedReferenceCounts());
 			assertEquals(retired, store.getValue(retiredId), "the retained retired value must resolve by ID");
 			assertEquals(LmdbValue.UNKNOWN_ID, store.getId(retired, false),
 					"the retired value must have no data -> ID forward mapping");
@@ -651,6 +695,11 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			// Standalone dictionaries have no async Sail worker; service their finite durable backlog explicitly.
+			reopened.completeStoreInitialization(unusedCandidatesWithoutStatementReferences -> {
+				// This standalone dictionary has no external statement references.
+			});
+			reopened.reclaimPersistedUnusedIdsBatch(4096);
 			assertNull(reopened.getValue(firstId), "the first live literal must be collected");
 			assertNull(reopened.getValue(secondId), "the second live literal must be collected");
 			assertNull(reopened.getValue(datatypeId),
@@ -689,14 +738,16 @@ class ValueStoreCheckpointAtomicityTest {
 			bulkStore.close();
 		}
 
-		IOException failure = assertThrows(IOException.class, () -> {
-			ValueStore unexpectedlyOpened = new ValueStore(valuesDir, config);
-			try {
-				throw new AssertionError("the reverse-only dependency fixture unexpectedly opened successfully");
-			} finally {
-				unexpectedlyOpened.close();
-			}
-		}, "a live owner must not endorse a reverse-only dependency");
+		ValueStore untrusted = new ValueStore(valuesDir, config);
+		IOException failure;
+		try {
+			assertFalse(untrusted.hasTrustedReferenceCounts());
+			failure = assertThrows(IOException.class, untrusted::reconstructReferenceCountsOffline,
+					"explicit verification must not endorse a live owner with a reverse-only dependency");
+			assertFalse(untrusted.hasTrustedReferenceCounts());
+		} finally {
+			untrusted.close();
+		}
 		assertTrue(failure.getMessage().contains("no live value-to-ID mapping"),
 				"recovery must fail with dependency corruption evidence: " + failure.getMessage());
 	}
@@ -748,6 +799,9 @@ class ValueStoreCheckpointAtomicityTest {
 
 		ValueStore reopened = new ValueStore(valuesDir, config);
 		try {
+			assertFalse(reopened.hasTrustedReferenceCounts());
+			reopened.reconstructReferenceCountsOffline();
+			assertTrue(reopened.hasTrustedReferenceCounts());
 			assertEquals(firstDatatypeId, reopened.getId(firstDatatype, false),
 					"the first distinct dependency must resolve after recovery");
 			assertEquals(lastDatatypeId, reopened.getId(lastDatatype, false),

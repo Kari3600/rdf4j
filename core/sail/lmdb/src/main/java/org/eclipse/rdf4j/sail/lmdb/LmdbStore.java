@@ -38,12 +38,10 @@ import org.eclipse.rdf4j.common.annotation.Experimental;
 import org.eclipse.rdf4j.common.annotation.InternalUseOnly;
 import org.eclipse.rdf4j.common.concurrent.locks.Lock;
 import org.eclipse.rdf4j.common.concurrent.locks.LockManager;
-import org.eclipse.rdf4j.common.iteration.QueryExecutionDeadline;
 import org.eclipse.rdf4j.common.transaction.IsolationLevel;
 import org.eclipse.rdf4j.common.transaction.IsolationLevels;
 import org.eclipse.rdf4j.model.ValueFactory;
 import org.eclipse.rdf4j.query.Dataset;
-import org.eclipse.rdf4j.query.QueryInterruptedException;
 import org.eclipse.rdf4j.query.algebra.evaluation.EvaluationStrategy;
 import org.eclipse.rdf4j.query.algebra.evaluation.EvaluationStrategyFactory;
 import org.eclipse.rdf4j.query.algebra.evaluation.QueryOptimizerPipeline;
@@ -139,6 +137,7 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 	private SailStore store;
 
 	private LmdbSailStore backingStore;
+	private boolean offlineMaintenance;
 	private PreparedBulkStore.Snapshot preparedBulkSnapshot;
 
 	// used to decide if store is writable, is true if the store was writable during initialization
@@ -300,6 +299,99 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 				System.getProperty("rdf4j.lmdb.nativeQueryEngine.enabled", "true"));
 	}
 
+	/** Returns the configured asyncValueCleanup setting. */
+	public boolean getAsyncValueCleanup() {
+		return config.getAsyncValueCleanup();
+	}
+
+	/** Configures asyncValueCleanup before initialization; live changes are rejected. */
+	public void setAsyncValueCleanup(boolean enabled) {
+		configureValueCleanup(() -> config.setAsyncValueCleanup(enabled));
+	}
+
+	/** Returns the configured asyncValueCleanupMaxCandidates setting. */
+	public int getAsyncValueCleanupMaxCandidates() {
+		return config.getAsyncValueCleanupMaxCandidates();
+	}
+
+	/** Configures asyncValueCleanupMaxCandidates before initialization; live changes are rejected. */
+	public void setAsyncValueCleanupMaxCandidates(int maxCandidates) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupMaxCandidates(maxCandidates));
+	}
+
+	/** Returns the configured asyncValueCleanupMaxBytes setting. */
+	public long getAsyncValueCleanupMaxBytes() {
+		return config.getAsyncValueCleanupMaxBytes();
+	}
+
+	/** Configures asyncValueCleanupMaxBytes before initialization; live changes are rejected. */
+	public void setAsyncValueCleanupMaxBytes(long maxBytes) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupMaxBytes(maxBytes));
+	}
+
+	/** Returns the configured asyncValueCleanupBatchSize setting. */
+	public int getAsyncValueCleanupBatchSize() {
+		return config.getAsyncValueCleanupBatchSize();
+	}
+
+	/** Configures asyncValueCleanupBatchSize before initialization; live changes are rejected. */
+	public void setAsyncValueCleanupBatchSize(int batchSize) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupBatchSize(batchSize));
+	}
+
+	/** Returns the configured asyncValueCleanupMaxPendingProducers setting. */
+	public int getAsyncValueCleanupMaxPendingProducers() {
+		return config.getAsyncValueCleanupMaxPendingProducers();
+	}
+
+	/** Configures asyncValueCleanupMaxPendingProducers before initialization; live changes are rejected. */
+	public void setAsyncValueCleanupMaxPendingProducers(int maxPendingProducers) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupMaxPendingProducers(maxPendingProducers));
+	}
+
+	/** Returns the bounded optional cleanup-pressure pause for safe new writers. */
+	public long getAsyncValueCleanupPressureTimeoutMillis() {
+		return config.getAsyncValueCleanupPressureTimeoutMillis();
+	}
+
+	/** Configures the cleanup-pressure pause before initialization; zero disables this optional pause. */
+	public void setAsyncValueCleanupPressureTimeoutMillis(long timeoutMillis) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupPressureTimeoutMillis(timeoutMillis));
+	}
+
+	/** Returns the configured asyncValueCleanupAdmissionTimeoutMillis setting. */
+	public long getAsyncValueCleanupAdmissionTimeoutMillis() {
+		return config.getAsyncValueCleanupAdmissionTimeoutMillis();
+	}
+
+	/** Configures asyncValueCleanupAdmissionTimeoutMillis before initialization; live changes are rejected. */
+	public void setAsyncValueCleanupAdmissionTimeoutMillis(long timeoutMillis) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupAdmissionTimeoutMillis(timeoutMillis));
+	}
+
+	/** Returns the configured asyncValueCleanupShutdownTimeoutMillis setting. */
+	public long getAsyncValueCleanupShutdownTimeoutMillis() {
+		return config.getAsyncValueCleanupShutdownTimeoutMillis();
+	}
+
+	/** Configures asyncValueCleanupShutdownTimeoutMillis before initialization; live changes are rejected. */
+	public void setAsyncValueCleanupShutdownTimeoutMillis(long timeoutMillis) {
+		configureValueCleanup(() -> config.setAsyncValueCleanupShutdownTimeoutMillis(timeoutMillis));
+	}
+
+	private void configureValueCleanup(Runnable update) {
+		initializationLock.writeLock().lock();
+		try {
+			if (isInitialized()) {
+				throw new IllegalStateException(
+						"Async value cleanup settings must be configured before initialization");
+			}
+			update.run();
+		} finally {
+			initializationLock.writeLock().unlock();
+		}
+	}
+
 	public boolean getPageCardinalityEstimator() {
 		return config.getPageCardinalityEstimator();
 	}
@@ -369,6 +461,15 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 	 * @throws SailException If this LmdbStore could not be initialized using the parameters that have been set.
 	 */
 	@Override
+	public void init() throws SailException {
+		super.init();
+		LmdbSailStore current = backingStore;
+		if (!offlineMaintenance && isInitialized() && current != null) {
+			current.startBackgroundMaintenanceAfterInitialization();
+		}
+	}
+
+	@Override
 	protected void initializeInternal() throws SailException {
 		logger.debug("Initializing LmdbStore...");
 		config.validate();
@@ -411,7 +512,14 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 			LmdbStoreFormat loadedFormat = properties.isLoaded()
 					? LmdbStoreFormat.resolve(dataDir, properties, config)
 					: null;
-			preparedBulkSnapshot = PreparedBulkStore.read(dataDir.toPath(), properties, config);
+			// Interrupted imports may discard their native data only after the persisted format has been admitted.
+			// Keep the original sidecars and recovery marker until the replacement generation is ready.
+			boolean resetInitialImport = LmdbInitialRunImport.resetInterruptedImport(dataDir.toPath(), loadedFormat);
+			if (resetInitialImport) {
+				properties.recreateNativeGeneration();
+			}
+			preparedBulkSnapshot = resetInitialImport ? null
+					: PreparedBulkStore.read(dataDir.toPath(), properties, config);
 			properties.preparedBulkStore = preparedBulkSnapshot;
 			if (preparedBulkSnapshot == null) {
 				LegacyStoreDiscovery.discover(dataDir, properties);
@@ -426,7 +534,11 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 
 			boolean useSketchBasedJoinEstimator = shouldUseSketchBasedJoinEstimator();
 			backingStore = createBackingStore(dataDir, properties, config, useSketchBasedJoinEstimator);
+			properties.completeNativeGenerationRecreation();
 			properties.save();
+			if (resetInitialImport) {
+				LmdbInitialRunImport.completeReset(dataDir.toPath(), format);
+			}
 
 			this.store = new SnapshotSailStore(backingStore, () -> new MemoryOverflowModel() {
 				@Override
@@ -520,6 +632,26 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 	}
 
 	@Override
+	protected void prepareForShutdown() throws SailException {
+		// Failure must precede the AbstractSail lifecycle transition: the worker retains both native
+		// environments and the directory lock until a later shutdown can safely finish.
+		if (backingStore != null) {
+			backingStore.stopAsyncValueCleanupForShutdown();
+		}
+	}
+
+	@Override
+	protected boolean cancelConnectionsOnShutdown() {
+		return true;
+	}
+
+	@Override
+	protected boolean tracksResultPulls() {
+		// LMDB result pulls read native snapshots that connection close retires.
+		return true;
+	}
+
+	@Override
 	public boolean isWritable() {
 		return isWritable;
 	}
@@ -545,7 +677,7 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 			overflowFormat.initializeProperties(overflowProperties);
 		}
 		LmdbSailStore overflowStore = new LmdbSailStore(directory, overflowProperties, config,
-				useSketchBasedJoinEstimator, overflowFormat, getQueryExecutionPolicy());
+				useSketchBasedJoinEstimator, overflowFormat, getQueryExecutionPolicy(), true);
 		overflowStore.enableMultiThreading = false;
 		return overflowStore;
 	}
@@ -567,30 +699,25 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 	 * @throws SailException
 	 */
 	protected Lock getTransactionLock(IsolationLevel level) throws SailException {
-		QueryExecutionDeadline deadline = QueryExecutionDeadline.current();
 		boolean mutexAcquired = false;
 		Lock transactionLock = null;
 		try {
-			checkTransactionAdmissionDeadline(deadline);
-			if (deadline == null) {
-				txnLockManager.lockInterruptibly();
-			} else if (!txnLockManager.tryLock(deadline.remainingMillis(), TimeUnit.MILLISECONDS)) {
-				throw new QueryInterruptedException("Query evaluation took too long");
-			}
+			checkTransactionAdmission();
+			txnLockManager.lockInterruptibly();
 			mutexAcquired = true;
-			checkTransactionAdmissionDeadline(deadline);
+			checkTransactionAdmission();
 			if (IsolationLevels.NONE.isCompatibleWith(level)) {
 				// make sure no isolated transaction are active
-				waitForIsolationLocks(isolatedLockManager, deadline);
+				waitForIsolationLocks(isolatedLockManager);
 				// mark isolation as disabled
 				transactionLock = disabledIsolationLockManager.createLock(level.toString());
 			} else {
 				// make sure isolation is not disabled
-				waitForIsolationLocks(disabledIsolationLockManager, deadline);
+				waitForIsolationLocks(disabledIsolationLockManager);
 				// mark isolated transaction as active
 				transactionLock = isolatedLockManager.createLock(level.toString());
 			}
-			checkTransactionAdmissionDeadline(deadline);
+			checkTransactionAdmission();
 			Lock admitted = transactionLock;
 			transactionLock = null;
 			return admitted;
@@ -610,21 +737,14 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 		}
 	}
 
-	private static void waitForIsolationLocks(LockManager locks, QueryExecutionDeadline deadline)
-			throws InterruptedException {
-		checkTransactionAdmissionDeadline(deadline);
-		if (deadline == null) {
-			locks.waitForActiveLocks();
-		} else if (!locks.waitForActiveLocks(deadline.remainingMillis(), TimeUnit.MILLISECONDS)) {
-			throw new QueryInterruptedException("Query evaluation took too long");
-		}
-		checkTransactionAdmissionDeadline(deadline);
+	/** A query time limit or cancellation ends the wait by interrupting it. */
+	private static void waitForIsolationLocks(LockManager locks) throws InterruptedException {
+		checkTransactionAdmission();
+		locks.waitForActiveLocks();
+		checkTransactionAdmission();
 	}
 
-	private static void checkTransactionAdmissionDeadline(QueryExecutionDeadline deadline) {
-		if (deadline != null && deadline.isExpired()) {
-			throw new QueryInterruptedException("Query evaluation took too long");
-		}
+	private static void checkTransactionAdmission() {
 		if (Thread.currentThread().isInterrupted()) {
 			throw new InterruptedSailException("Interrupted while waiting for LMDB transaction admission");
 		}
@@ -696,8 +816,101 @@ public class LmdbStore extends AbstractNotifyingSail implements FederatedService
 	}
 
 	public boolean awaitSketchesReady(long timeout, TimeUnit unit) throws InterruptedException {
-		SketchBasedJoinEstimator estimator = getSketchBasedJoinEstimator();
-		return estimator != null && estimator.awaitReady(timeout, unit);
+		Objects.requireNonNull(unit, "unit");
+		if (timeout < 0L) {
+			throw new IllegalArgumentException("timeout must be non-negative");
+		}
+		LmdbSailStore current = backingStore;
+		return current != null && current.awaitSketchesReady(timeout, unit);
+	}
+
+	/** Bounded authority and maintenance information; obtaining it never walks native records. */
+	@InternalUseOnly
+	public record StartupStatus(boolean exactReferenceCounts, boolean referenceCountVerificationPending,
+			boolean retainedValueMaintenance, String statementIndexBuild, String tripleTermIndexBuild,
+			String auxiliaryMaintenance, boolean optionalMaintenancePending) {
+		public boolean backgroundWorkPending() {
+			return referenceCountVerificationPending || retainedValueMaintenance || optionalMaintenancePending
+					|| !statementIndexBuild.equals("IDLE") || !tripleTermIndexBuild.equals("IDLE")
+					|| auxiliaryMaintenance.equals("NOT_STARTED") || auxiliaryMaintenance.equals("RUNNING");
+		}
+	}
+
+	@InternalUseOnly
+	public StartupStatus getStartupStatus() {
+		LmdbSailStore current = initializedBackingStore();
+		try {
+			LmdbDirectAdjacencyStore adjacency = current.directAdjacencyStore();
+			return new StartupStatus(current.valueStore().hasTrustedReferenceCounts(),
+					current.valueStore().isReferenceCountVerificationPending(),
+					current.valueStore().hasDeferredValueMaintenance(),
+					current.getTripleStore().indexRebuildStatus(), current.valueStore().indexRebuildStatus(),
+					current.postReadyMaintenanceStatus(), current.valueStore().hasPendingValueOverlayMaintenance()
+							|| adjacency != null && adjacency.hasPendingMaintenance()
+							|| current.getSketchBasedJoinEstimator() != null
+									&& current.getSketchBasedJoinEstimator().hasPendingBackgroundRefresh());
+		} catch (IOException failure) {
+			throw new SailException("Could not inspect bounded value-maintenance metadata", failure);
+		}
+	}
+
+	/** Waits for requested index layouts without making their completion a readiness requirement. */
+	@InternalUseOnly
+	public boolean awaitIndexRebuild(long timeout, TimeUnit unit) throws IOException, InterruptedException {
+		Objects.requireNonNull(unit, "unit");
+		if (timeout < 0L) {
+			throw new IllegalArgumentException("timeout must be non-negative");
+		}
+		LmdbSailStore current = initializedBackingStore();
+		long started = System.nanoTime();
+		long budget = unit.toNanos(timeout);
+		if (!current.getTripleStore().awaitIndexRebuild(budget, TimeUnit.NANOSECONDS)) {
+			return false;
+		}
+		long remaining = Math.max(0L, budget - (System.nanoTime() - started));
+		return current.valueStore().awaitIndexRebuild(remaining, TimeUnit.NANOSECONDS);
+	}
+
+	private LmdbSailStore initializedBackingStore() {
+		LmdbSailStore current = backingStore;
+		if (current == null) {
+			throw new IllegalStateException("LMDB store is not initialized");
+		}
+		return current;
+	}
+
+	/** Exhaustively checks a closed repository while holding its directory lock; does not repair native records. */
+	@InternalUseOnly
+	public static void verifyStoreOffline(File directory, LmdbStoreConfig config) throws IOException {
+		Objects.requireNonNull(directory, "directory");
+		Objects.requireNonNull(config, "config");
+		Lock lock = new DirectoryLockManager(directory).lockOrFail();
+		try {
+			StoreProperties properties = new StoreProperties(directory);
+			properties.load();
+			if (properties.isLoaded()) {
+				LmdbStoreFormat.resolve(directory, properties, config);
+			}
+			LegacyStoreDiscovery.verify(directory, properties);
+		} finally {
+			lock.release();
+		}
+	}
+
+	/**
+	 * Reconstructs the complete active owner graph in a closed repository. Partial work remains UNKNOWN; exact-count
+	 * authority is published only by the final successful native transaction. Ordinary durability settings apply.
+	 */
+	@InternalUseOnly
+	public static void reconstructReferenceCountsOffline(File directory, LmdbStoreConfig config) throws IOException {
+		LmdbStore maintenance = new LmdbStore(directory, config);
+		maintenance.offlineMaintenance = true;
+		try {
+			maintenance.init();
+			maintenance.backingStore.reconstructReferenceCountsOffline();
+		} finally {
+			maintenance.shutDown();
+		}
 	}
 
 	/**

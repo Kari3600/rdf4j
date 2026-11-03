@@ -34,8 +34,10 @@ import org.eclipse.rdf4j.repository.RepositoryException;
 import org.eclipse.rdf4j.repository.RepositoryResult;
 import org.eclipse.rdf4j.repository.config.RepositoryConfig;
 import org.eclipse.rdf4j.repository.config.RepositoryConfigException;
+import org.eclipse.rdf4j.repository.config.RepositoryConfigSecrets;
 import org.eclipse.rdf4j.repository.manager.LocalRepositoryManager;
 import org.eclipse.rdf4j.repository.manager.RemoteRepositoryManager;
+import org.eclipse.rdf4j.repository.manager.RepositoryInfo;
 import org.eclipse.rdf4j.rio.RDFFormat;
 import org.eclipse.rdf4j.rio.Rio;
 import org.eclipse.rdf4j.rio.WriterConfig;
@@ -91,9 +93,13 @@ public class SummaryServlet extends TransformationServlet {
 	public void service(TupleResultBuilder builder)
 			throws RepositoryException, QueryEvaluationException, MalformedQueryException, QueryResultHandlerException {
 		builder.metadata(EFFECTIVE_CONFIG_TURTLE, getEffectiveConfigTurtle());
+		// This servlet outlives a change of title (Save and restart keeps the repository object): ask for the current
+		// one.
+		RepositoryInfo current = manager.getRepositoryInfo(info.getId());
+		RepositoryInfo shown = current != null ? current : info;
 		builder.start("id", "description", "location", "server", "size", "contexts");
 		builder.link(List.of(INFO));
-		builder.result(info.getId(), info.getDescription(), info.getLocation(), getServer(), null, null);
+		builder.result(shown.getId(), shown.getDescription(), shown.getLocation(), getServer(), null, null);
 		builder.end();
 	}
 
@@ -199,6 +205,7 @@ public class SummaryServlet extends TransformationServlet {
 
 			Model model = new LinkedHashModel();
 			repositoryConfig.export(model, bnode());
+			RepositoryConfigSecrets.redact(model);
 
 			WriterConfig writerConfig = new WriterConfig();
 			writerConfig.set(BasicWriterSettings.PRETTY_PRINT, true);
@@ -208,7 +215,7 @@ public class SummaryServlet extends TransformationServlet {
 			Rio.write(model, writer, RDFFormat.TURTLE, writerConfig);
 			return writer.toString();
 		} catch (RepositoryConfigException | RepositoryException e) {
-			LOGGER.warn("Unable to render effective repository config.", e);
+			LOGGER.debug("Effective configuration of repository {} is not available", info.getId(), e);
 			return null;
 		}
 	}

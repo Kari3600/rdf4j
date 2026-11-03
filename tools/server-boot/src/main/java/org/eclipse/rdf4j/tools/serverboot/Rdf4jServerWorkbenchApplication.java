@@ -26,12 +26,16 @@ import java.util.Map;
 import org.apache.catalina.Context;
 import org.eclipse.rdf4j.common.platform.Platform;
 import org.eclipse.rdf4j.common.platform.PlatformFactory;
+import org.eclipse.rdf4j.common.webapp.system.logging.LoggingAccessFilter;
 import org.eclipse.rdf4j.http.server.compression.HttpCompressionFilter;
+import org.eclipse.rdf4j.http.server.security.RequestIntegrityFilter;
 import org.eclipse.rdf4j.workbench.proxy.CacheFilter;
 import org.eclipse.rdf4j.workbench.proxy.CookieCacheControlFilter;
 import org.eclipse.rdf4j.workbench.proxy.RedirectFilter;
 import org.eclipse.rdf4j.workbench.proxy.WorkbenchGateway;
+import org.eclipse.rdf4j.workbench.proxy.config.WorkbenchFallbackNamespacesServlet;
 import org.eclipse.rdf4j.workbench.proxy.config.WorkbenchPolicy;
+import org.eclipse.rdf4j.workbench.security.WorkbenchCsrfFilter;
 import org.eclipse.rdf4j.workbench.security.WorkbenchSessionCookieInitializer;
 import org.eclipse.rdf4j.workbench.util.WorkbenchRequest;
 import org.slf4j.Logger;
@@ -68,6 +72,7 @@ public class Rdf4jServerWorkbenchApplication {
 	private static final Logger logger = LoggerFactory.getLogger(Rdf4jServerWorkbenchApplication.class);
 	private static final String APP_DATA_BASEDIR_PROPERTY = Platform.APPDATA_BASEDIR_PROPERTY;
 	private static final String[] APPLICATION_IDS = { "Server", "webapp-base" };
+	private static final int REQUEST_INTEGRITY_FILTER_ORDER = -20;
 
 	public static void main(String[] args) {
 		ensureAppDataDirAccessible();
@@ -218,6 +223,37 @@ public class Rdf4jServerWorkbenchApplication {
 		return registration;
 	}
 
+	/** Mirrors web.xml: the namespaces the Workbench query editor falls back on for prefixes that are not defined. */
+	@Bean
+	ServletRegistrationBean<WorkbenchFallbackNamespacesServlet> rdf4jWorkbenchFallbackNamespacesServlet() {
+		ServletRegistrationBean<WorkbenchFallbackNamespacesServlet> registration = new ServletRegistrationBean<>(
+				new WorkbenchFallbackNamespacesServlet(), "/rdf4j-workbench/fallback-namespaces");
+		registration.setName("rdf4jWorkbenchFallbackNamespaces");
+		return registration;
+	}
+
+	@Bean
+	FilterRegistrationBean<RequestIntegrityFilter> requestIntegrityFilter() {
+		FilterRegistrationBean<RequestIntegrityFilter> registration = new FilterRegistrationBean<>(
+				new RequestIntegrityFilter());
+		registration.addUrlPatterns("/rdf4j-server/repositories", "/rdf4j-server/repositories/*");
+		registration.setName("RequestIntegrityFilter");
+		registration.setOrder(REQUEST_INTEGRITY_FILTER_ORDER);
+		registration.setAsyncSupported(true);
+		return registration;
+	}
+
+	@Bean
+	FilterRegistrationBean<WorkbenchCsrfFilter> workbenchCsrfFilter() {
+		FilterRegistrationBean<WorkbenchCsrfFilter> registration = new FilterRegistrationBean<>(
+				new WorkbenchCsrfFilter());
+		registration.addUrlPatterns("/rdf4j-workbench/repositories", "/rdf4j-workbench/repositories/*");
+		registration.setName("request-integrity");
+		registration.setOrder(REQUEST_INTEGRITY_FILTER_ORDER);
+		registration.setAsyncSupported(true);
+		return registration;
+	}
+
 	@Bean
 	FilterRegistrationBean<ServerPrefixForwardFilter> serverPrefixForwardFilter() {
 		logger.info("Registering ServerPrefixForwardFilter");
@@ -226,6 +262,17 @@ public class Rdf4jServerWorkbenchApplication {
 		registration.addUrlPatterns("/rdf4j-server", "/rdf4j-server/*", "/rdf4j-workbench", "/rdf4j-workbench/*");
 		registration.setName("ServerPrefixForwardFilter");
 		registration.setOrder(1000);
+		registration.setAsyncSupported(true);
+		return registration;
+	}
+
+	@Bean
+	FilterRegistrationBean<LoggingAccessFilter> loggingAccessFilter() {
+		FilterRegistrationBean<LoggingAccessFilter> registration = new FilterRegistrationBean<>(
+				new LoggingAccessFilter());
+		registration.addUrlPatterns("/system/logging/*", "/rdf4j-server/system/logging/*");
+		registration.setName("LoggingAccessFilter");
+		registration.setOrder(-13);
 		registration.setAsyncSupported(true);
 		return registration;
 	}
@@ -394,15 +441,14 @@ public class Rdf4jServerWorkbenchApplication {
 	}
 
 	/**
-	 * Mirrors web.xml: the graph explorer's unhashed entry and stylesheet are revalidated (they load hashed chunks).
+	 * Mirrors web.xml: scripts and stylesheets keep their names across releases, so they are revalidated and an upgrade
+	 * never leaves a browser running the previous release's scripts (or an explorer entry whose chunks are gone).
 	 */
 	@Bean
-	FilterRegistrationBean<CacheFilter> revalidatedEntryFilter() {
+	FilterRegistrationBean<CacheFilter> revalidatedAssetFilter() {
 		FilterRegistrationBean<CacheFilter> registration = new FilterRegistrationBean<>(new CacheFilter());
-		registration.addUrlPatterns("/rdf4j-workbench/scripts/graph-explorer/graph-explorer.mjs",
-				"/rdf4j-workbench/scripts/graph-explorer/query-graph-renderer.mjs",
-				"/rdf4j-workbench/styles/graph-explorer.css");
-		registration.setName("RevalidatedEntryFilter");
+		registration.addUrlPatterns("/rdf4j-workbench/scripts/*", "/rdf4j-workbench/styles/*");
+		registration.setName("RevalidatedAssetFilter");
 		registration.setOrder(3);
 		registration.setAsyncSupported(true);
 		registration.addInitParameter("Cache-Control", "0");

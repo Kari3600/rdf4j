@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import org.eclipse.rdf4j.common.iteration.CloseableIteratorIteration;
+import org.eclipse.rdf4j.model.Model;
 import org.eclipse.rdf4j.model.Resource;
 import org.eclipse.rdf4j.model.impl.SimpleValueFactory;
 import org.eclipse.rdf4j.repository.Repository;
@@ -73,12 +74,48 @@ class SummaryServletTest {
 				.contains("config:rep.impl [")
 				.contains("config:sail.impl [")
 				.contains("config:mem.persist true")
+				.doesNotContain("private-password-marker")
 				.doesNotContain("_:");
+	}
+
+	/**
+	 * The servlet outlives a change of title (Save and restart on the Configuration page keeps the repository object):
+	 * the Summary shows the repository's current title, like its configuration below.
+	 */
+	@Test
+	void serviceShowsTheRepositorysCurrentTitle() throws Exception {
+		SummaryServlet servlet = new SummaryServlet();
+		RepositoryManager manager = mock(RepositoryManager.class);
+		RepositoryInfo whenCreated = new RepositoryInfo();
+		whenCreated.setId("memory");
+		whenCreated.setDescription("Old title");
+		RepositoryInfo current = new RepositoryInfo();
+		current.setId("memory");
+		current.setDescription("New title");
+		when(manager.getRepositoryConfig("memory")).thenReturn(repositoryConfig());
+		when(manager.getRepositoryInfo("memory")).thenReturn(current);
+		servlet.setRepositoryManager(manager);
+		servlet.setRepositoryInfo(whenCreated);
+
+		ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+		servlet.service(
+				new TupleResultBuilder(new WorkbenchTupleResultWriter(buffer), SimpleValueFactory.getInstance()));
+
+		assertThat(buffer.toString(StandardCharsets.UTF_8)).contains("New title").doesNotContain("Old title");
 	}
 
 	private static RepositoryConfig repositoryConfig() {
 		MemoryStoreConfig memoryStoreConfig = new MemoryStoreConfig(true, 123L);
-		return new RepositoryConfig("memory", "Memory repo", new SailRepositoryConfig(memoryStoreConfig));
+		return new RepositoryConfig("memory", "Memory repo", new SailRepositoryConfig(memoryStoreConfig)) {
+			@Override
+			public void export(Model model, Resource repositoryNode) {
+				super.export(model, repositoryNode);
+				model.add(repositoryNode, SimpleValueFactory.getInstance()
+						.createIRI(
+								"tag:rdf4j.org,2023:config/lucene.elasticsearch.http.password"),
+						SimpleValueFactory.getInstance().createLiteral("private-password-marker"));
+			}
+		};
 	}
 
 	private static RepositoryResult<Resource> repositoryResultOf(Resource... resources) {

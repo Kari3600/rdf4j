@@ -25,6 +25,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -82,6 +84,8 @@ class LmdbConstructorCleanupTest {
 	void closesPersistentSetFactoryWhenFirstWriterCreatesNamedSet(int failedSet, @TempDir Path directory)
 			throws Exception {
 		Path storeDirectory = Files.createDirectory(directory.resolve("store"));
+		// Async cleanup deliberately bypasses the persistent sets whose construction fails in this test.
+		LmdbStoreConfig durableConfig = config().setAsyncValueCleanup(false);
 		AtomicReference<FailingPersistentSetFactory> factoryReference = new AtomicReference<>();
 		IOException injectedFailure = new IOException("injected failure creating named set " + failedSet);
 		LmdbSailStore.PersistentSetFactoryFactory factory = dataDir -> {
@@ -91,13 +95,13 @@ class LmdbConstructorCleanupTest {
 			return created;
 		};
 
-		LmdbStore initialized = new LmdbStore(storeDirectory.toFile(), config());
+		LmdbStore initialized = new LmdbStore(storeDirectory.toFile(), durableConfig);
 		initialized.init();
 		initialized.shutDown();
 		StoreProperties properties = new StoreProperties(storeDirectory.toFile());
 		assertTrue(properties.load(), "owning initialization publishes coherent format capabilities");
 		try (LmdbSailStore backing = new LmdbSailStore(storeDirectory.toFile(),
-				properties, config(), false, ValueStore::new, TripleStore::new,
+				properties, durableConfig, false, ValueStore::new, TripleStore::new,
 				factory, LmdbFilterSelectivityStats::new)) {
 			assertNull(factoryReference.get(),
 					"the optional factory must remain unopened before a writer mutates data");
@@ -120,7 +124,7 @@ class LmdbConstructorCleanupTest {
 		}
 
 		properties.save(); // Direct backing-store construction does not publish the owning store sidecar.
-		LmdbStore reopened = new LmdbStore(storeDirectory.toFile(), config());
+		LmdbStore reopened = new LmdbStore(storeDirectory.toFile(), durableConfig);
 		reopened.init();
 		try (SailConnection connection = reopened.getConnection();
 				CloseableIteration<? extends Statement> statements = connection.getStatements(null, null, null,
@@ -132,12 +136,14 @@ class LmdbConstructorCleanupTest {
 	}
 
 	@Test
-	void closesOpenedStoresWhenEstimatorSetupFailsAfterCoreInitialization(@TempDir Path directory) throws Exception {
+	void optionalEstimatorFailurePreservesAuthoritativeStoresAndNormalCleanup(@TempDir Path directory)
+			throws Exception {
 		Path storeDirectory = Files.createDirectory(directory.resolve("estimator-store"));
 		AtomicBoolean valueStoreClosed = new AtomicBoolean();
 		AtomicBoolean tripleStoreClosed = new AtomicBoolean();
 		AtomicReference<FailingPersistentSetFactory> factoryReference = new AtomicReference<>();
 		IOException injectedFailure = new IOException("injected estimator setup failure");
+		CountDownLatch estimatorAttempted = new CountDownLatch(1);
 		LmdbSailStore.ValueStoreFactory valueStoreFactory = (valueDir, properties, config) -> new ValueStore(valueDir,
 				properties, config) {
 			@Override
@@ -162,26 +168,47 @@ class LmdbConstructorCleanupTest {
 		LmdbSailStore.FilterSelectivityStatsFactory statsFactory = (estimatorPath, triples, values,
 				optimizerSamplingEnabled, optimizerSamplingMaxMillis, optimizerSamplingMaxRows,
 				backgroundRawSamplingEnabled) -> {
+			estimatorAttempted.countDown();
 			throw injectedFailure;
 		};
 
 		LmdbStoreConfig estimatorConfig = config();
 		estimatorConfig.setExperimentalQueryOptimizations(true);
-		IOException failure = assertThrows(IOException.class,
-				() -> new LmdbSailStore(storeDirectory.toFile(), new StoreProperties(storeDirectory.toFile()),
-						estimatorConfig,
-						true, valueStoreFactory, tripleStoreFactory, setFactoryFactory, statsFactory));
-
+		try (LmdbSailStore backing = new LmdbSailStore(storeDirectory.toFile(),
+				new StoreProperties(storeDirectory.toFile()), estimatorConfig,
+				true, valueStoreFactory, tripleStoreFactory, setFactoryFactory, statsFactory)) {
+			assertEquals(1L, estimatorAttempted.getCount(), "construction must not load optional estimator state");
+			backing.startBackgroundMaintenanceAfterInitialization();
+			assertTrue(estimatorAttempted.await(30, TimeUnit.SECONDS));
+			for (Thread helper : Thread.getAllStackTraces().keySet()) {
+				if (helper.getName().equals("LmdbStore-PostReady")) {
+					helper.join(TimeUnit.SECONDS.toMillis(30));
+					assertFalse(helper.isAlive(), "failed optional initialization must finish");
+				}
+			}
+			assertEquals("FAILED: " + injectedFailure, backing.postReadyMaintenanceStatus());
+			assertFalse(valueStoreClosed.get(), "optional estimator failure cannot close authoritative values");
+			assertFalse(tripleStoreClosed.get(), "optional estimator failure cannot close authoritative statements");
+			assertNull(factoryReference.get(), "optional persistent sets remain unopened until a real mutation");
+			try (SailSink sink = backing.getExplicitSailSource().sink(IsolationLevels.SNAPSHOT)) {
+				sink.approve(SimpleValueFactory.getInstance().createIRI("urn:optional:subject"),
+						SimpleValueFactory.getInstance().createIRI("urn:optional:predicate"),
+						SimpleValueFactory.getInstance().createLiteral("committed despite optional failure"), null);
+				sink.flush();
+			}
+			try (var dataset = backing.getExplicitSailSource().dataset(IsolationLevels.SNAPSHOT);
+					var statements = dataset.getStatements(null, null, null)) {
+				assertTrue(statements.hasNext());
+				assertEquals("committed despite optional failure", statements.next().getObject().stringValue());
+				assertFalse(statements.hasNext());
+			}
+		}
 		assertAll(
-				() -> assertSame(injectedFailure, failure, "estimator setup failure must remain primary"),
-				() -> assertTrue(valueStoreClosed.get(),
-						"the value environment must close after estimator setup fails"),
+				() -> assertTrue(valueStoreClosed.get(), "normal close releases the authoritative value environment"),
 				() -> assertTrue(tripleStoreClosed.get(),
-						"the triple environment must close after estimator setup fails"),
-				() -> assertNull(factoryReference.get(),
-						"the optional persistent-set factory must not be created during estimator initialization"),
+						"normal close releases the authoritative statement environment"),
 				() -> assertEquals(0, countSetDirectories(storeDirectory),
-						"temporary set environment must be removed after estimator setup fails"));
+						"normal close releases any lazily created temporary set environment"));
 	}
 
 	private static boolean containsCauseReference(Throwable failure, Throwable expected) {

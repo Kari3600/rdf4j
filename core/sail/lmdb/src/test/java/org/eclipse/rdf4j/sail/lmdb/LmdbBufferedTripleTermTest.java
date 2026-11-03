@@ -137,7 +137,13 @@ class LmdbBufferedTripleTermTest {
 		BufferingSail buffering = new BufferingSail(store);
 		SailRepository repository = new SailRepository(buffering);
 		repository.init();
-		// Reopening releases the old cohort before any new reader owns its dictionary epoch.
+		LmdbGcTestMaintenance.awaitTrustedReclamationSetup(store);
+		assertTrue(store.getBackingStore().asyncValueCleanupCoordinator().awaitEmpty(10, TimeUnit.SECONDS));
+		LmdbGcTestMaintenance.drainRetirements(store.getBackingStore());
+		// The worker may already have reclaimed this finite cohort; the free-pool assertion below is the oracle.
+		LmdbGcTestMaintenance.reclaimUnusedValues(store, 4096);
+		// Reopening and explicit bounded maintenance release the old cohort before any new reader owns its dictionary
+		// epoch.
 		long initialFree = entries(store, "free_ids");
 		assertTrue(initialFree > 0, "The released cohort must supply physically reclaimable IDs");
 		int[][] selections = { { 0 }, { 0 }, { 1 }, { 1, 2 }, { 2, 3 }, { 3 } };
@@ -656,7 +662,7 @@ class LmdbBufferedTripleTermTest {
 	}
 
 	private static LmdbStore newStore(File directory) {
-		return new LmdbStore(directory, new LmdbStoreConfig("spoc,posc")
+		return new LmdbStore(directory, new LmdbStoreConfig("spoc,posc,ospc")
 				.setTripleDBSize(128L * 1024 * 1024)
 				.setValueDBSize(128L * 1024 * 1024)
 				.setInlineLiterals(false)

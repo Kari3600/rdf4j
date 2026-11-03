@@ -105,6 +105,10 @@ class FakeElement {
         this.id = options.id || '';
         this.name = options.name || '';
         this.value = options.value || '';
+        if (this.tagName === 'TEXTAREA') {
+            // As in a browser: the text the textarea was rendered with, which typing into it leaves unchanged.
+            this.defaultValue = this.value;
+        }
         this.type = options.type || '';
         this.checked = !!options.checked;
         this.selected = !!options.selected;
@@ -1298,7 +1302,12 @@ function createJQuery(document, ajaxHandler) {
             })
             .join('&');
     };
-    $.ajax = ajaxHandler;
+    const ajaxPrefilters = [];
+    $.ajaxPrefilter = (prefilter) => ajaxPrefilters.push(prefilter);
+    $.ajax = (options) => {
+        ajaxPrefilters.forEach((prefilter) => prefilter(options));
+        return ajaxHandler(options);
+    };
     $.getJSON = (url, data, callback) => {
         if (typeof callback === 'function') {
             callback({});
