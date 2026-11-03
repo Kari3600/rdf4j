@@ -1024,7 +1024,8 @@ public class SPARQLParserTest {
 		try {
 			CustomAggregateNAryFunctionRegistry.getInstance().add(factory);
 			assertThatExceptionOfType(IllegalArgumentException.class).isThrownBy(() -> parser.parseQuery(query, null))
-					.withMessageStartingWith("Custom n-ary aggregate function calls must have at least 2 arguments");
+					.withMessageStartingWith(
+							"Custom n-ary aggregate function 'https://www.rdf4j.org/aggregate#nary' received invalid number of arguments: Expected at least 2 arguments");
 		} finally {
 			CustomAggregateNAryFunctionRegistry.getInstance().remove(factory);
 		}
@@ -1655,12 +1656,13 @@ public class SPARQLParserTest {
 			}
 
 			@Override
-			public AggregateNAryFunction buildFunction(BiFunction<Integer, BindingSet, Value> evaluationStepByIndex) {
+			public AggregateNAryFunction buildFunction(int arity,
+					BiFunction<Integer, BindingSet, Value> evaluationStepByIndex) {
 				return null;
 			}
 
 			@Override
-			public AggregateCollector getCollector() {
+			public AggregateCollector getCollector(int arity) {
 				return null;
 			}
 		};

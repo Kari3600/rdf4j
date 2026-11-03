@@ -94,6 +94,7 @@ import org.eclipse.rdf4j.query.parser.sparql.aggregate.AggregateNAryFunction;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.AggregateNAryFunctionFactory;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.CustomAggregateFunctionRegistry;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.CustomAggregateNAryFunctionRegistry;
+import org.eclipse.rdf4j.query.parser.sparql.aggregate.InvalidArityException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -768,7 +769,7 @@ public class GroupIteratorTest {
 		}
 
 		@Override
-		public AggregateNAryFunction<SumCollector, Value> buildFunction(
+		public AggregateNAryFunction<SumCollector, Value> buildFunction(int arity,
 				BiFunction<Integer, BindingSet, Value> evaluationStepByIndex) {
 			return new AggregateNAryFunction<>(evaluationStepByIndex) {
 				private ValueExprEvaluationException typeError = null;
@@ -814,7 +815,7 @@ public class GroupIteratorTest {
 		}
 
 		@Override
-		public SumCollector getCollector() {
+		public SumCollector getCollector(int arity) {
 			return new SumCollector();
 		}
 	}
@@ -827,7 +828,7 @@ public class GroupIteratorTest {
 		}
 
 		@Override
-		public AggregateNAryFunction<SumCollector, Value> buildFunction(
+		public AggregateNAryFunction<SumCollector, Value> buildFunction(int arity,
 				BiFunction<Integer, BindingSet, Value> evaluationStepByIndex) {
 			return new AggregateNAryFunction<>(evaluationStepByIndex) {
 
@@ -843,7 +844,7 @@ public class GroupIteratorTest {
 		}
 
 		@Override
-		public SumCollector getCollector() {
+		public SumCollector getCollector(int arity) {
 			return new SumCollector();
 		}
 	}
@@ -855,17 +856,13 @@ public class GroupIteratorTest {
 		}
 
 		@Override
-		public int getMinNumberOfArguments() {
-			return 1;
+		public void validateArity(int arity) throws InvalidArityException {
+			if (arity != 1)
+				throw new InvalidArityException("Expected exactly one argument");
 		}
 
 		@Override
-		public int getMaxNumberOfArguments() {
-			return 1;
-		}
-
-		@Override
-		public AggregateNAryFunction<SumCollector, Value> buildFunction(
+		public AggregateNAryFunction<SumCollector, Value> buildFunction(int arity,
 				BiFunction<Integer, BindingSet, Value> evaluationStepByIndex) {
 			return new AggregateNAryFunction<>(evaluationStepByIndex) {
 				private ValueExprEvaluationException typeError = null;
@@ -895,7 +892,7 @@ public class GroupIteratorTest {
 		}
 
 		@Override
-		public SumCollector getCollector() {
+		public SumCollector getCollector(int arity) {
 			return new SumCollector();
 		}
 	}

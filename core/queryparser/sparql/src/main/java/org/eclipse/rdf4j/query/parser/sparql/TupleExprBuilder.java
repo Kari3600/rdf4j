@@ -43,6 +43,7 @@ import org.eclipse.rdf4j.model.vocabulary.FN;
 import org.eclipse.rdf4j.model.vocabulary.RDF;
 import org.eclipse.rdf4j.query.BindingSet;
 import org.eclipse.rdf4j.query.MalformedQueryException;
+import org.eclipse.rdf4j.query.QueryEvaluationException;
 import org.eclipse.rdf4j.query.algebra.AggregateFunctionCall;
 import org.eclipse.rdf4j.query.algebra.AggregateOperator;
 import org.eclipse.rdf4j.query.algebra.And;
@@ -128,6 +129,7 @@ import org.eclipse.rdf4j.query.impl.ListBindingSet;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.AggregateNAryFunctionFactory;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.CustomAggregateFunctionRegistry;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.CustomAggregateNAryFunctionRegistry;
+import org.eclipse.rdf4j.query.parser.sparql.aggregate.InvalidArityException;
 import org.eclipse.rdf4j.query.parser.sparql.ast.ASTAbs;
 import org.eclipse.rdf4j.query.parser.sparql.ast.ASTAnd;
 import org.eclipse.rdf4j.query.parser.sparql.ast.ASTAnnotationSuffix;
@@ -2232,19 +2234,11 @@ public class TupleExprBuilder extends AbstractASTVisitor {
 
 	private void validateNAryAggregateArity(String functionIri, AggregateNAryFunctionFactory factory,
 			int argumentCount) {
-		int minimum = factory.getMinNumberOfArguments();
-		int maximum = factory.getMaxNumberOfArguments();
-		if (minimum < 0 || maximum < minimum) {
+		try {
+			factory.validateArity(argumentCount);
+		} catch (InvalidArityException e) {
 			throw new IllegalArgumentException("Custom n-ary aggregate function '" + functionIri
-					+ "' has invalid arity declaration");
-		}
-		if (argumentCount < minimum) {
-			throw new IllegalArgumentException("Custom n-ary aggregate function calls must have at least " + minimum
-					+ " arguments");
-		}
-		if (argumentCount > maximum) {
-			throw new IllegalArgumentException("Custom n-ary aggregate function calls must have at most " + maximum
-					+ " arguments");
+					+ "' received invalid number of arguments: " + e.getMessage());
 		}
 	}
 

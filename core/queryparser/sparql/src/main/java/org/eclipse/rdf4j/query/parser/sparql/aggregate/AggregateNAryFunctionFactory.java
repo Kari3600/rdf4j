@@ -31,33 +31,29 @@ public interface AggregateNAryFunctionFactory {
 	String getIri();
 
 	/**
-	 * Lower bound for accepted number of aggregate arguments.
+	 * Validates number of arguments.
 	 *
-	 * @return minimum accepted number of arguments
+	 * @param arity number of arguments passed to the function
+	 * @throws InvalidArityException whether the number of arguments didn't meet the expectations
 	 */
-	default int getMinNumberOfArguments() {
-		return 2;
-	}
-
-	/**
-	 * Upper bound for accepted number of aggregate arguments.
-	 *
-	 * @return maximum accepted number of arguments
-	 */
-	default int getMaxNumberOfArguments() {
-		return Integer.MAX_VALUE;
+	default void validateArity(int arity) throws InvalidArityException {
+		if (arity < 2) {
+			throw new InvalidArityException("Expected at least 2 arguments");
+		}
 	}
 
 	/**
 	 * Builds an aggregate function with input evaluation step
 	 *
+	 * @param arity                 number of arguments passed to the function
 	 * @param evaluationStepByIndex used to process values from an iterator's binding set
 	 * @return an aggregate function evaluator
 	 */
-	AggregateNAryFunction buildFunction(BiFunction<Integer, BindingSet, Value> evaluationStepByIndex);
+	AggregateNAryFunction buildFunction(int arity, BiFunction<Integer, BindingSet, Value> evaluationStepByIndex);
 
 	/**
+	 * @param arity number of arguments passed to the function
 	 * @return result collector associated with given function type
 	 */
-	AggregateCollector getCollector();
+	AggregateCollector getCollector(int arity);
 }

@@ -76,6 +76,7 @@ import org.eclipse.rdf4j.query.parser.sparql.aggregate.AggregateNAryFunctionFact
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.AggregateProcessor;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.CustomAggregateFunctionRegistry;
 import org.eclipse.rdf4j.query.parser.sparql.aggregate.CustomAggregateNAryFunctionRegistry;
+import org.eclipse.rdf4j.query.parser.sparql.aggregate.InvalidArityException;
 
 /**
  * @author David Huynh
@@ -541,7 +542,7 @@ public class GroupIterator extends AbstractCloseableIteratorIteration<BindingSet
 			}
 			if (nAryFactory.isPresent()) {
 				validateNAryAggregateArity(aggOperator, nAryFactory.get(), argumentCount);
-				return createNAryCustomAggregate(ge, operator, aggOperator, nAryFactory.get());
+				return createNAryCustomAggregate(ge, operator, aggOperator, nAryFactory.get(), argumentCount);
 			}
 			if (unaryFactory.isPresent()) {
 				if (argumentCount != 1) {
@@ -596,35 +597,27 @@ public class GroupIterator extends AbstractCloseableIteratorIteration<BindingSet
 
 	private AggregatePredicateCollectorSupplier<?, ?> createNAryCustomAggregate(GroupElem ge,
 			AggregateOperator operator,
-			AggregateFunctionCall aggOperator, AggregateNAryFunctionFactory factory) {
+			AggregateFunctionCall aggOperator, AggregateNAryFunctionFactory factory,
+			int arity) {
 		Supplier<Predicate<List<Value>>> predicate = createDistinctTupleValueTest(operator);
 		BiFunction<Integer, BindingSet, Value> evaluator = precompileNAryArg(aggOperator);
 		var function = factory.buildFunction(
+				arity,
 				(index, bindings) -> QueryExecutionContext.initializeExternalValue(evaluator.apply(index, bindings)));
 		return new AggregatePredicateCollectorSupplier<>((bindings, distinct, collector) -> {
 			QueryExecutionContext.initializeExternalBindings(bindings);
 			function.processAggregate(bindings, distinct, collector);
-		}, predicate, factory::getCollector, ge.getName());
+		}, predicate, () -> factory.getCollector(arity), ge.getName());
 	}
 
 	private void validateNAryAggregateArity(AggregateFunctionCall aggregateOperator,
 			AggregateNAryFunctionFactory factory,
 			int argumentCount) {
-		int minimum = factory.getMinNumberOfArguments();
-		int maximum = factory.getMaxNumberOfArguments();
-		if (minimum < 0 || maximum < minimum) {
+		try {
+			factory.validateArity(argumentCount);
+		} catch (InvalidArityException e) {
 			throw new QueryEvaluationException("Custom n-ary aggregate function '" + aggregateOperator.getIRI()
-					+ "' has invalid arity declaration");
-		}
-		if (argumentCount < minimum) {
-			throw new QueryEvaluationException(
-					"Custom n-ary aggregate function '" + aggregateOperator.getIRI() + "' expects at least " + minimum
-							+ " arguments, got " + argumentCount);
-		}
-		if (argumentCount > maximum) {
-			throw new QueryEvaluationException(
-					"Custom n-ary aggregate function '" + aggregateOperator.getIRI() + "' expects at most " + maximum
-							+ " arguments, got " + argumentCount);
+					+ "' received invalid number of arguments: " + e.getMessage());
 		}
 	}
 

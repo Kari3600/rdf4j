@@ -1070,19 +1070,19 @@ abstract class LmdbNativeAggregatePlannerBase {
 		if (args.size() == 1 && unaryFactory.isPresent()) {
 			var factory = unaryFactory.get();
 			return AggregateSpec.custom(name,
-					new NativeCustomAggregate(factory, null, argumentEvaluators, factory::getCollector, false,
+					new NativeCustomAggregate(factory, null, argumentEvaluators, factory::getCollector, -1,
 							call.isDistinct()));
 		}
 		if (nAryFactory.isPresent()) {
 			var factory = nAryFactory.get();
-			int minimum = factory.getMinNumberOfArguments();
-			int maximum = factory.getMaxNumberOfArguments();
-			if (minimum < 0 || maximum < minimum || args.size() < minimum || args.size() > maximum) {
+			try {
+				factory.validateArity(args.size());
+			} catch (org.eclipse.rdf4j.query.parser.sparql.aggregate.InvalidArityException e) {
 				// arity violation: the generic engine raises a query error — leave it to the island
 				return null;
 			}
 			return AggregateSpec.custom(name,
-					new NativeCustomAggregate(null, factory, argumentEvaluators, factory::getCollector, true,
+					new NativeCustomAggregate(null, factory, argumentEvaluators, () -> factory.getCollector(args.size()), args.size(),
 							call.isDistinct()));
 		}
 		return null;
